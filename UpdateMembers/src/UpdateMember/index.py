@@ -65,88 +65,105 @@ ENABLED = "ENABLED"
 def lambda_handler(event, context):
 
     logger.info(event)
+    regions_list = os.environ["Regions"].split(",")
 
     try:
-        # set variables and boto3 clients
-        config = Config(
-            retries = {
-                'max_attempts': 23,
-                'mode': 'standard'
-                }
+        for region in regions_list:
+            region = region.strip()
+            logger.info("UPDATING REGION: %s", str(region))
+            # set variables and boto3 clients
+            config_member = Config(
+                region_name = region,
+                retries = {
+                    'max_attempts': 23,
+                    'mode': 'standard'
+                    }
+                )
+            config = Config(
+                retries = {
+                    'max_attempts': 23,
+                    'mode': 'standard'
+                    }
+                )
+            administrator_account_id = context.invoked_function_arn.split(":")[4]
+            member_account_id = event["account"]
+
+            role_arn = os.environ["MemberRole"].replace("<accountId>", member_account_id)
+            global sts_client
+            if not sts_client:
+                sts_client = boto3.client("sts")
+            assumed_role_object = sts_client.assume_role(
+                RoleArn=role_arn, RoleSessionName="SecurityHubUpdater"
             )
-        administrator_account_id = context.invoked_function_arn.split(":")[4]
-        member_account_id = event["account"]
+            credentials = assumed_role_object["Credentials"]
+            member_security_hub_client = boto3.client(
+                "securityhub",
+                aws_access_key_id=credentials["AccessKeyId"],
+                aws_secret_access_key=credentials["SecretAccessKey"],
+                aws_session_token=credentials["SessionToken"],
+                config=config_member,
+            )
 
-        role_arn = os.environ["MemberRole"].replace("<accountId>", member_account_id)
-        global sts_client
-        if not sts_client:
-            sts_client = boto3.client("sts")
-        assumed_role_object = sts_client.assume_role(
-            RoleArn=role_arn, RoleSessionName="SecurityHubUpdater"
-        )
-        credentials = assumed_role_object["Credentials"]
-        member_security_hub_client = boto3.client(
-            "securityhub",
-            aws_access_key_id=credentials["AccessKeyId"],
-            aws_secret_access_key=credentials["SecretAccessKey"],
-            aws_session_token=credentials["SessionToken"],
-            config=config,
-        )
+            # Optimization - no need to reinitilize the administrator security hub client for every instance of this Lambda function
+            global administrator_security_hub_client
+            if not administrator_security_hub_client:
+                administrator_security_hub_client = boto3.client("securityhub", config=config)
 
-        # Optimization - no need to reinitilize the administrator security hub client for every instance of this Lambda function
-        global administrator_security_hub_client
-        if not administrator_security_hub_client:
-            administrator_security_hub_client = boto3.client("securityhub", config=config)
-
-        # Get standard subscription controls
-        standards = administrator_security_hub_client.describe_standards()
-        administrator_enabled_standards = get_enabled_standard_subscriptions(
-            standards, administrator_account_id, administrator_security_hub_client
-        )
-        member_enabled_standards = get_enabled_standard_subscriptions(
-            standards, member_account_id, member_security_hub_client
-        )
-
-        logger.info("Update Account %s", member_account_id)
-
-        # Update standard subscriptions in member account
-        standards_updated = update_standard_subscription(
-            administrator_enabled_standards,
-            member_enabled_standards,
-            member_security_hub_client,
-        )
-        if standards_updated:
-            logger.info("Fetch enabled standards again.")
+            # Get standard subscription controls
+            standards = administrator_security_hub_client.describe_standards()
+            administrator_enabled_standards = get_enabled_standard_subscriptions(
+                standards, administrator_account_id, administrator_security_hub_client
+            )
+            logger.debug("Administrator enabled standards: %s", str(administrator_enabled_standards))
             member_enabled_standards = get_enabled_standard_subscriptions(
                 standards, member_account_id, member_security_hub_client
             )
+            logger.debug("Member enabled standards: %s", str(member_enabled_standards))
 
-        # Get Controls
-        admin_controls = get_controls(
-            administrator_enabled_standards, administrator_security_hub_client
-        )
-        member_controls = get_controls(
-            member_enabled_standards, member_security_hub_client
-        )
+            logger.info("Update Account %s", member_account_id)
 
-        # Get exceptions
-        exceptions = get_exceptions(event)
-        logger.debug("Exceptions: %s", str(exceptions))
+            # Update standard subscriptions in member account
+            standards_updated = update_standard_subscription(
+                region,
+                administrator_enabled_standards,
+                member_enabled_standards,
+                member_security_hub_client,
+            )
+            if standards_updated:
+                logger.info("Fetch enabled standards again.")
+                member_enabled_standards = get_enabled_standard_subscriptions(
+                    standards, member_account_id, member_security_hub_client
+                )
 
-        # Disable/enable the controls in member account
-        update_member(
-            admin_controls, member_controls, member_security_hub_client, exceptions
-        )
+            # Get Controls
+            admin_controls = get_controls(
+                administrator_enabled_standards, administrator_security_hub_client
+            )
+            member_controls = get_controls(
+                member_enabled_standards, member_security_hub_client
+            )
+            logger.debug("Administrator controls: %s", str(admin_controls))
+            logger.debug("Member controls: %s", str(member_controls))
+
+
+            # Get exceptions
+            exceptions = get_exceptions(event)
+            logger.info("Exceptions: %s", str(exceptions))
+
+            # Disable/enable the controls in member account
+            update_member(
+                region, admin_controls, member_controls, member_security_hub_client, exceptions
+            )
 
     except botocore.exceptions.ClientError as error:
         logger.error(error)
-        return {"statusCode": 500, "account": member_account_id, "error": str(error)}
+        return {"statusCode": 500, "account": member_account_id, "error": str(error), "region": str(region)}
 
     return {"statusCode": 200, "account": member_account_id}
 
 
 def update_member(
-    admin_controls, member_controls, member_security_hub_client, exceptions
+    region, admin_controls, member_controls, member_security_hub_client, exceptions
 ):
     """
     Identifying which control needs to be updated
@@ -154,7 +171,7 @@ def update_member(
 
     for admin_key in admin_controls:
         for member_key in member_controls:
-            if admin_key == member_key:
+            if admin_key == member_key.replace(region, os.environ["AWS_REGION"]):
                 # Same security standard TODO
                 for admin_control, member_control in zip(
                     admin_controls[admin_key], member_controls[member_key]
@@ -201,16 +218,18 @@ def update_control_status(member_control, client, new_status, disabled_reason=No
             ControlStatus=new_status,
             DisabledReason=disabled_reason if disabled_reason else DISABLED_REASON,
         )
+        logger.info("DISABLED control: %s", str(member_control["StandardsControlArn"]))
     else:
         # ENABLE control
         client.update_standards_control(
             StandardsControlArn=member_control["StandardsControlArn"],
             ControlStatus=new_status,
         )
+        logger.info("ENABLED control: %s", str(member_control["StandardsControlArn"]))
 
 
 def update_standard_subscription(
-    administrator_enabled_standards, member_enabled_standards, client
+    region, administrator_enabled_standards, member_enabled_standards, client
 ):
     """
     Update security standards to reflect state in administrator account
@@ -223,19 +242,21 @@ def update_standard_subscription(
         standard["StandardsArn"]
         for standard in member_enabled_standards["StandardsSubscriptions"]
     ]
+
     standards = client.describe_standards()["Standards"]
+
     standard_to_be_enabled = []
     standard_to_be_disabled = []
 
     for standard in standards:
         if (
-            standard["StandardsArn"] in admin_standard_arns
+            standard["StandardsArn"].replace(region, os.environ["AWS_REGION"]) in admin_standard_arns
             and standard["StandardsArn"] not in member_standard_arns
         ):
             # enable standard
             standard_to_be_enabled.append({"StandardsArn": standard["StandardsArn"]})
         if (
-            standard["StandardsArn"] not in admin_standard_arns
+            standard["StandardsArn"].replace(region, os.environ["AWS_REGION"]) not in admin_standard_arns
             and standard["StandardsArn"] in member_standard_arns
         ):
             # disable standard
@@ -247,6 +268,9 @@ def update_standard_subscription(
                     standard_to_be_disabled.append(
                         subscription["StandardsSubscriptionArn"]
                     )
+
+    logger.info("Standards to be enabled: %s", str(standard_to_be_enabled))
+    logger.info("Standards to be disabled: %s", str(standard_to_be_disabled))
 
     standards_changed = False
 

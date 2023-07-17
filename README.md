@@ -14,7 +14,7 @@
 
 ## Goal
 
-AWS Security Hub allows you to disable controls of security standards such as CIS AWS Foundations controls or AWS Foundational Security Best Practices controls. However, in a multi account setup with a dedicated Security Hub administrator account, there is no native way to disable specific controls globally for all Security Hub member accounts. This project intends to close this gap by propagating the action of enabling or disabling security standards and its controls in the Security Hub administrator account across all of the Security Hub member accounts.
+AWS Security Hub allows you to disable controls of security standards such as CIS AWS Foundations controls or AWS Foundational Security Best Practices controls. However, in a multi account setup with a dedicated Security Hub administrator account, there is no native way to disable specific controls globally for all Security Hub member accounts. This project intends to close this gap by propagating the action of enabling or disabling security standards and its controls in the Security Hub administrator account across all of the Security Hub member accounts and specific regions.
 
 ## Overview
 
@@ -80,6 +80,7 @@ aws cloudformation deploy --template-file UpdateMembers/template-out.yaml --capa
 | MemberIAMRoleName         | Name of IAM Role in member account - this must match the `IAMRoleName` parameter in the `memeber-iam-role` stack.   | securityhub-UpdateControl-role |
 | Path                      | Path of IAM LambdaExecution Roles                                                                            | /                      |
 | EventTriggerState                      | The state of the SecurityHubUpdateEvent rule monitoring Security Hub control updates and triggering the state machine                                                                            | DISABLED                      |
+| Regions                      | The regions where the SecurityHub Security Standards should be enabled/disabled on the member accounts.                                                                            | eu-west-1, eu-central-1                      |
 | NotificationEmail1                      | Optional - E-mail address to receive notification if the state machine fails.  |                       |
 | NotificationEmail2                      | Optional - E-mail address to receive notification if the state machine fails.  |                       |
 | NotificationEmail3                      | Optional - E-mail address to receive notification if the state machine fails.  |                       |
@@ -162,7 +163,7 @@ A **successfull** execution can be seen in the following picture:
 A **failed** execution can be seen in the following picture:  
 ![Failed](img/Failed_execution.png)
 
-An execution can fail, for example, if the cross-acccount IAM Role is not deployed in the member account or any other `ClientError` is raised in the `UpdateMember` Lambda function.
+An execution can fail, for example, if the cross-acccount IAM Role is not deployed in the member account, Security Hub is now enabled in the specific region of the member account or any other `ClientError` is raised in the `UpdateMember` Lambda function.
 
 In that case, a message is published to the SNS topic in the `SendSNS` step, containing information about which accounts were not updated successfully and providing the according error message per account. E-Mail addresses receiving the message can be set during deployment via the `NotificationEmail*` parameters.  
 The same information can be inspected in the the state machine logs. You find this information for example in the *Step Input* section of the *PipelineFailed* step as seen in the following picture:  

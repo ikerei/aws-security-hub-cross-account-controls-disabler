@@ -24,7 +24,11 @@ Parameters:
     Default: "DISABLED"
     AllowedValues: ["ENABLED", "DISABLED"]
     Description: The state of the SecurityHubUpdateEvent rule monitoring Security Hub control updates and triggering the state machine
-  
+  Regions:
+    Type: String
+    Default: "eu-west-1, eu-central-1"
+    Description: The regions where the SecurityHub Security Standards should be disabled on the member accounts.
+    
   # TODO - Subscriptions: If you need more e-mail subscriptions, add another parameter. Also, add another condition in the "Conditions" section and adapt the list of subscriptions in the StateMachineFailureSNSTopic resource accordingly.
   NotificationEmail1:
     Type: String
@@ -151,6 +155,7 @@ Resources:
       Environment:
         Variables:
           MemberRole: !Sub "arn:aws:iam::<accountId>:role${MemberIAMRolePath}${MemberIAMRoleName}"
+          Regions: !Ref Regions
 
   SecurityHubMemberUpdateStateMachineRole:
     Type: AWS::IAM::Role
